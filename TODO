@@ -1,0 +1,2 @@
+split move_head into two seprate phases, horizontal and vertical
+look at angle and stop when it's less than treshold

@@ -94,7 +94,7 @@ class HeadMoverPublisher(Thread):
         message.joint_angles = [dirs[0]*2, dirs[1]*1]
         message.speed = self.speed
         self.head_mover_pub.publish(message)
-        time.sleep(30)
+        #time.sleep(30)
         #self.stop_head()
 
     def stop_head(self):
