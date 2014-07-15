@@ -2,18 +2,23 @@
 import roslib
 import rospy
 import tf
+import actionlib
 from threading import Thread, Lock
 
 import time
 
 from operator import sub
 from math import *
-from nao_msgs.msg import JointAnglesWithSpeed
+from nao_msgs.msg import (JointAnglesWithSpeed,
+                          JointAnglesWithSpeedAction,
+                          JointAnglesWithSpeedGoal)
 from sensor_msgs.msg import JointState
 
 transform_lock = Lock()
 latest_transform = None
 transform_changed = False
+
+transformations = [("CameraTop_frame0","4x4_1"),("CameraTop_frame1", "4x4_2")]
 
 class HeadStateSubscriber(Thread):
 
@@ -55,8 +60,15 @@ class HeadStateSubscriber(Thread):
 
 class HeadMoverPublisher(Thread):
 
-    speed = 0.02
+    speed = 0.05
+
+    movement_coeff = 0.5
+
+    horizontal_angle_treshold = 5
+    vertical_angle_treshold   = 5
+
     head_mover_pub = None
+    head_mover_client = None
 
     head_state_manager = None
 
@@ -64,6 +76,7 @@ class HeadMoverPublisher(Thread):
         Thread.__init__(self)
         self.head_state_manager = head_state_manager
         self.head_mover_pub = rospy.Publisher('joint_angles', JointAnglesWithSpeed, queue_size = 10)
+        self.head_mover_client = actionlib.SimpleActionClient("joint_angles_action", JointAnglesWithSpeedAction)
 
     def run(self):
         r = rospy.Rate(10)
@@ -81,39 +94,37 @@ class HeadMoverPublisher(Thread):
             transform_lock.release()
 
             if angles != None:
-                print angles
-                dirs   = self.get_dirs(angles)
-                #print dirs
-                self.move_head(dirs)
+                self.move_head(angles)
 
             r.sleep()
 
-    def move_head(self,dirs):
+    def move_head(self,relative_angles):
+        if (abs(relative_angles["angle_left"]) < self.horizontal_angle_treshold) and \
+           (abs(relative_angles["angle_up"])   < self.vertical_angle_treshold):
+            return
+
+        print relative_angles
+        '''
         message = JointAnglesWithSpeed()
+        message.relative     = 1
         message.joint_names  = ["HeadYaw", "HeadPitch"]
-        message.joint_angles = [dirs[0]*2, dirs[1]*1]
+        message.joint_angles = [-radians(relative_angles["angle_left"])*self.movement_coeff, 
+                                 radians(relative_angles["angle_up"])  *self.movement_coeff]
         message.speed = self.speed
         self.head_mover_pub.publish(message)
-        #time.sleep(30)
-        #self.stop_head()
+        '''
 
-    def stop_head(self):
-        current_head_pos = self.head_state_manager.get_current_head_positions()
-        stop_message = JointAnglesWithSpeed()
-        stop_message.joint_names  = ["HeadYaw", "HeadPitch"]
-        stop_message.joint_angles = [current_head_pos[0],
-                                     current_head_pos[1]] 
-        stop_message.speed = 1.0
-        self.head_mover_pub.publish(stop_message)
+        goal = JointAnglesWithSpeedGoal()
+        goal.joint_angles.relative = 1
+        goal.joint_angles.joint_names = ["HeadYaw", "HeadPitch"]
+        goal.joint_angles.joint_angles = [-radians(relative_angles["angle_left"])*self.movement_coeff, 
+                                 radians(relative_angles["angle_up"])  *self.movement_coeff]
+        goal.joint_angles.speed = self.speed
+        self.head_mover_client.send_goal(goal)
 
     def get_angles(self, trans):
-        return {"angle_up":   degrees(atan(-trans[1]/trans[2])),
-                "angle_left": degrees(atan(-trans[0]/trans[2]))}
-
-    def get_dirs(self, angles):
-        horizontal_dir = 1 if angles["angle_left"] > 0 else -1
-        vertical_dir   = 1 if angles["angle_up"]   < 0 else -1
-        return (horizontal_dir, vertical_dir)
+        return {"angle_up":   degrees(atan(trans[1]/trans[2])),
+                "angle_left": degrees(atan(trans[0]/trans[2]))}
 
 class MarkerTransformListener():
 
@@ -126,31 +137,34 @@ class MarkerTransformListener():
         if old_transform == None and new_transform != None:
             return True
         else:
+            return True
             #print map(abs, map(sub, old_transform, new_transform))
-            return all(map(float.__ge__, 
-                map(abs, map(sub, old_transform, new_transform)),
-                (0.01, 0.01, 0.01)))
+            #return all(map(float.__ge__, 
+            #    map(abs, map(sub, old_transform, new_transform)),
+            #    (0.01, 0.01, 0.01)))
 
     def run(self):
         rate = rospy.Rate(10.0)
-        self.listener.waitForTransform("/CameraTop_frame1", "4x4_2", rospy.Time(), rospy.Duration(4.0))
+        #self.listener.waitForTransform("/CameraTop_frame0", "4x4_1", rospy.Time(), rospy.Duration(4.0))
         while not rospy.is_shutdown():
+            '''
             try:
                 now = rospy.Time().now()
                 self.listener.waitForTransform("/CameraTop_frame1", "4x4_2", now, rospy.Duration(4.0))
+                (new_transform, _) = self.listener.lookupTransform('/CameraTop_frame1', '/4x4_2', now)
                 
                 transform_lock.acquire(True)
                 global latest_transform, transform_changed
-                (new_transform, _) = self.listener.lookupTransform('/CameraTop_frame1', '/4x4_2', now)
-                
+
                 if self.did_transform_change(latest_transform, new_transform):
                     transform_changed = True
                     latest_transform  = new_transform
                 
                 transform_lock.release()
-                #print latest_transform
-            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+
+            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException, tf.Exception):
                 continue
+            '''
 
 if __name__ == '__main__':
     
