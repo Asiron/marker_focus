@@ -1,24 +1,27 @@
 #!/usr/bin/env python  
 import roslib
-import rospy
-import tf
-import actionlib
-from threading import Thread, Lock
+roslib.load_manifest('ar_pose')
 
-import time
+from collections import defaultdict
+
+import rospy, tf, actionlib, time, message_filters, math
+
+from threading import Thread, Lock
 
 from operator import sub
 from math import *
+
+from ar_pose.msg import ARMarkers
 from nao_msgs.msg import (JointAnglesWithSpeed,
                           JointAnglesWithSpeedAction,
                           JointAnglesWithSpeedGoal)
 from sensor_msgs.msg import JointState
 
 transform_lock = Lock()
-latest_transform = None
-transform_changed = False
+latest_transforms  = defaultdict(tuple)
+transforms_changed = False
 
-transformations = [("CameraTop_frame0","4x4_1"),("CameraTop_frame1", "4x4_2")]
+markers = ["4x4_1", "4x4_2"]
 
 class HeadStateSubscriber(Thread):
 
@@ -81,16 +84,16 @@ class HeadMoverPublisher(Thread):
     def run(self):
         r = rospy.Rate(10)
         while not rospy.is_shutdown():
-      
+            
             transform_lock.acquire(True)
             
             angles = None
 
-            global latest_transform, transform_changed
-            if latest_transform != None and transform_changed == True:
-                transform_changed = False
-                angles = self.get_angles(latest_transform)
-
+            global latest_transforms, transforms_changed
+            if latest_transforms != None and len(latest_transforms) > 0 and transforms_changed == True:
+                transforms_changed = False
+                transform = self.get_best_transform(latest_transforms)
+                angles    = self.get_angles_desc(transform)
             transform_lock.release()
 
             if angles != None:
@@ -103,35 +106,40 @@ class HeadMoverPublisher(Thread):
            (abs(relative_angles["angle_up"])   < self.vertical_angle_treshold):
             return
 
-        print relative_angles
-        '''
-        message = JointAnglesWithSpeed()
-        message.relative     = 1
-        message.joint_names  = ["HeadYaw", "HeadPitch"]
-        message.joint_angles = [-radians(relative_angles["angle_left"])*self.movement_coeff, 
-                                 radians(relative_angles["angle_up"])  *self.movement_coeff]
-        message.speed = self.speed
-        self.head_mover_pub.publish(message)
-        '''
+        #print relative_angles
 
         goal = JointAnglesWithSpeedGoal()
         goal.joint_angles.relative = 1
         goal.joint_angles.joint_names = ["HeadYaw", "HeadPitch"]
         goal.joint_angles.joint_angles = [-radians(relative_angles["angle_left"])*self.movement_coeff, 
-                                 radians(relative_angles["angle_up"])  *self.movement_coeff]
+                                    radians(relative_angles["angle_up"])  *self.movement_coeff]
         goal.joint_angles.speed = self.speed
         self.head_mover_client.send_goal(goal)
-
-    def get_angles(self, trans):
+    
+    
+    def get_angles_desc(self, trans):
         return {"angle_up":   degrees(atan(trans[1]/trans[2])),
                 "angle_left": degrees(atan(trans[0]/trans[2]))}
 
+    def get_angles(self, trans):
+        return (degrees(atan(trans[1]/trans[2])),
+                degrees(atan(trans[0]/trans[2])))
+
+    def geo_average(self, angles):
+        return math.sqrt(angles[0]**2+angles[1]**2)
+
+    def get_best_transform(self, transformations):            
+        best = min(transformations.items(), key=lambda x: self.geo_average(self.get_angles(x[1])))
+        if len(transformations) > 1:
+            print "Best is ", best[0], best[1]
+            print "Other is ", transformations
+        return best[1]
+
 class MarkerTransformListener():
 
-    listener = None
 
     def __init__(self):
-        self.listener = tf.TransformListener()
+        pass
 
     def did_transform_change(self, old_transform, new_transform):
         if old_transform == None and new_transform != None:
@@ -143,28 +151,33 @@ class MarkerTransformListener():
             #    map(abs, map(sub, old_transform, new_transform)),
             #    (0.01, 0.01, 0.01)))
 
-    def run(self):
-        rate = rospy.Rate(10.0)
-        #self.listener.waitForTransform("/CameraTop_frame0", "4x4_1", rospy.Time(), rospy.Duration(4.0))
-        while not rospy.is_shutdown():
-            '''
-            try:
-                now = rospy.Time().now()
-                self.listener.waitForTransform("/CameraTop_frame1", "4x4_2", now, rospy.Duration(4.0))
-                (new_transform, _) = self.listener.lookupTransform('/CameraTop_frame1', '/4x4_2', now)
-                
-                transform_lock.acquire(True)
-                global latest_transform, transform_changed
+    def marker_callback(self, data):
+        if len(data.markers) == 0:
+            return
+        else:
+            for marker in data.markers:
 
-                if self.did_transform_change(latest_transform, new_transform):
-                    transform_changed = True
-                    latest_transform  = new_transform
-                
+                marker_name = marker.header.frame_id
+
+                new_transform = marker.pose.pose.position
+                new_transform = (new_transform.x, new_transform.y, new_transform.z)
+
+                #print "Marker observed ", marker_name
+
+                transform_lock.acquire(True)
+                global latest_transforms, transforms_changed
+                if self.did_transform_change(latest_transforms[marker_name], new_transform):
+                    transforms_changed = True
+                    latest_transforms[marker_name] = new_transform
+
                 transform_lock.release()
 
-            except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException, tf.Exception):
-                continue
-            '''
+    def run(self):
+
+        rospy.Subscriber("ar_pose_marker", ARMarkers, self.marker_callback)
+
+        while not rospy.is_shutdown():
+            pass
 
 if __name__ == '__main__':
     
