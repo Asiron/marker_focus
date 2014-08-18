@@ -25,7 +25,7 @@ Transformation = namedtuple('Transformation', ['transform', 'timestamp'])
 latest_transforms  = {}
 transforms_changed = False
 
-markers = ["4x4_79", "4x4_83", "4x4_85", "4x4_91", "4x4_94"]
+markers = ["4x4_8", "4x4_11", "4x4_28", "4x4_48", "4x4_89"]
 
 class HeadStateSubscriber(Thread):
 
