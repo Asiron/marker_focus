@@ -13,7 +13,8 @@ from math import *
 
 from std_msgs.msg import String
 from ar_pose.msg import ARMarkers
-from nao_msgs.msg import (JointAnglesWithSpeed,
+from nao_msgs.msg import (FadeRGB,
+                          JointAnglesWithSpeed,
                           JointAnglesWithSpeedAction,
                           JointAnglesWithSpeedGoal)
 from sensor_msgs.msg import JointState
@@ -25,7 +26,7 @@ Transformation = namedtuple('Transformation', ['transform', 'timestamp'])
 latest_transforms  = {}
 transforms_changed = False
 
-markers = ["4x4_8", "4x4_11", "4x4_28", "4x4_48", "4x4_89"]
+loaded_markers = ["4x4_8", "4x4_11", "4x4_28", "4x4_48", "4x4_89"]
 
 class HeadStateSubscriber(Thread):
 
@@ -99,6 +100,7 @@ class HeadMoverPublisher(Thread):
             transform_lock.release()
 
             if angles != None:
+                pass
                 self.move_head(angles)
 
             r.sleep()
@@ -148,12 +150,12 @@ class MarkerTransformListener():
     def did_transform_change(self, old_transform, new_transform):
         if old_transform == None and new_transform != None:
             return True
-        else:
+        elif all(map(float.__ge__, 
+                map(abs, map(sub, old_transform, new_transform)),
+                (0.01, 0.01, 0.01))):
             return True
-            #print map(abs, map(sub, old_transform, new_transform))
-            #return all(map(float.__ge__, 
-            #    map(abs, map(sub, old_transform, new_transform)),
-            #    (0.01, 0.01, 0.01)))
+        else:
+            return False
 
     def marker_lost(self, marker):
         message = ""
@@ -173,7 +175,7 @@ class MarkerTransformListener():
         
         global latest_transforms
         for k, v in latest_transforms.items():
-            if (rospy.Time.now() - v.timestamp).to_sec() > 2:
+            if (rospy.Time.now() - v.timestamp).to_sec() > 3:
                 print "Lost marker !!! ", k
                 #self.marker_lost(k)
                 del latest_transforms[k]
@@ -189,12 +191,13 @@ class MarkerTransformListener():
 
         for marker in data.markers:
 
+            if not marker.header.frame_id in loaded_markers:
+                continue
+
             marker_name = marker.header.frame_id
 
             new_transform = marker.pose.pose.position
             new_transform = (new_transform.x, new_transform.y, new_transform.z)
-
-            #print "Marker observed ", marker_name
 
             transform_lock.acquire(True)
             global latest_transforms, transforms_changed
@@ -202,6 +205,7 @@ class MarkerTransformListener():
             now = rospy.Time.now()
 
             if latest_transforms.get(marker_name,None) == None:
+                print "Marker found ", marker.header.frame_id 
                 latest_transforms[marker_name] = Transformation(transform=new_transform, timestamp=now)
             elif self.did_transform_change(latest_transforms[marker_name].transform, new_transform):
                 transforms_changed = True
@@ -217,8 +221,10 @@ class MarkerTransformListener():
 
 class MarkerSearcher(Thread):
 
+    eye_led_pub = None
     head_mover_pub = None
     head_state_manager = None
+    stiffness_publisher = None
 
     speed = 0.05
     direction = 1
@@ -232,7 +238,13 @@ class MarkerSearcher(Thread):
     def __init__(self, head_state_manager):        
         Thread.__init__(self)
         self.head_state_manager = head_state_manager
-        self.head_mover_pub = rospy.Publisher("/joint_angles", JointAnglesWithSpeed, queue_size = 10)
+        self.eye_led_pub = rospy.Publisher("/fade_rgb", FadeRGB, queue_size = 10)
+        self.head_mover_pub = rospy.Publisher("/joint_angles", JointAnglesWithSpeed, queue_size = None)
+        self.stiffness_publisher = rospy.Publisher("/joint_stiffness", JointState, queue_size = None)
+
+        #sleep so that subscribers are aware of the new publisher
+        rospy.sleep(1)
+
         self.set_stiffness()
 
     def run(self):
@@ -255,17 +267,31 @@ class MarkerSearcher(Thread):
         result = False if len(latest_transforms) == 0 else True
         
         transform_lock.release()
+
+        if result:
+            self.light_eye_led([1,0,0])
+        else:
+            self.light_eye_led([0,0,0])
+
         return result
 
+    def light_eye_led(self, color):
+        msg = FadeRGB()
+        msg.led_name = "FaceLeds"
+        msg.color.r = color[0]
+        msg.color.g = color[1]
+        msg.color.b = color[2]
+        msg.color.a = 0
+        msg.fade_duration = rospy.Duration(0)
+        self.eye_led_pub.publish(msg)
+
     def set_stiffness(self):
-        stiffness_publisher = rospy.Publisher("/joint_stiffness", JointState, queue_size = 10)
         stiffness_message = JointState()
         stiffness_message.name = ["HeadYaw", "HeadPitch"]
         stiffness_message.position = [0,0]
         stiffness_message.velocity = [0,0]
         stiffness_message.effort   = [1,1]
-        stiffness_publisher.publish(stiffness_message)
-
+        self.stiffness_publisher.publish(stiffness_message)
 
     def start_moving(self):
         print "Start moving"
@@ -290,9 +316,6 @@ class MarkerSearcher(Thread):
         self.send_command(1,0.0,0.0)
 
     def send_command(self, relative, head_yaw, head_pitch):
-#        while self.head_mover_pub.get_num_connections == 0:
-#            pass
-
         message = JointAnglesWithSpeed()
         message.relative = relative
         message.joint_names  = ["HeadYaw", "HeadPitch"]
