@@ -214,7 +214,7 @@ class MarkerTransformListener():
 
     def run(self):
 
-        rospy.Subscriber("ar_pose_marker", ARMarkers, self.marker_callback)
+        rospy.Subscriber("markers_filtered/map_to_footprint", ARMarkers, self.marker_callback)
 
         while not rospy.is_shutdown():
             pass
